@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { supabase } from "./supabaseClient";
 import { getPlanDetails } from "./billingLogic";
 import { Mail, Lock, CheckCircle2, Building2 } from "lucide-react";
-import { Logo, TextField, AuthShell, getStoredPlanSelection, fetchProfile, upsertProfile, API_BASE_URL } from "./shared";
+import { Logo, TextField, AuthShell, getStoredPlanSelection, resolveSignedInUser, upsertProfile, API_BASE_URL } from "./shared";
 
 export function LoginScreen({ go, onLogin }) {
   const [email, setEmail] = useState("");
@@ -30,7 +30,7 @@ export function LoginScreen({ go, onLogin }) {
         return;
       }
 
-      const profile = await fetchProfile(data.user.id, data.user.email, data.user.user_metadata);
+      const profile = await resolveSignedInUser(data.user, data.session.access_token);
       onLogin(profile || { id: data.user.id, email: data.user.email });
       go("dashboard");
     } catch (loginError) {
@@ -91,6 +91,10 @@ export function SignupScreen({ go, onLogin }) {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const handleSubmit = async () => {
+    if (form.selectedMode === "paid") {
+      go("checkout");
+      return;
+    }
     if (!form.email.trim() || !form.password || !form.business.trim()) {
       setError("Business name, email, and password are required.");
       return;

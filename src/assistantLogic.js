@@ -8,7 +8,7 @@ function inferPrice(type, serviceName, description) {
   return 'contact us';
 }
 
-export function buildAssistantRequestPayload(message, profile = {}, conversation = [], extras = {}) {
+export function buildAssistantRequestPayload(message, profile = {}, conversation = [], extras = {}, options = {}) {
   const context = getBusinessContext(profile);
   const { faqs = [], services = [] } = extras;
 
@@ -42,7 +42,7 @@ export function buildAssistantRequestPayload(message, profile = {}, conversation
 
   return {
     message: `${message || ''}`.trim(),
-    businessId: profile?.id || null,
+    businessId: options.previewOnly ? null : profile?.id || null,
     plan: profile?.plan || '14-day trial',
     profile: {
       business: context.businessName,

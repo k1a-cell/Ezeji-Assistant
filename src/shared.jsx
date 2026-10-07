@@ -80,6 +80,26 @@ export async function fetchProfile(userId, email, userMetadata = {}) {
   };
 }
 
+export async function resolveSignedInUser(authUser, accessToken) {
+  const profile = await fetchProfile(authUser.id, authUser.email, authUser.user_metadata);
+  if (profile) return profile;
+
+  const response = await fetch(`${API_BASE_URL}/staff/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (response.status === 404) return null;
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not load staff access.");
+
+  return {
+    id: result.businessId,
+    email: authUser.email,
+    plan: result.plan,
+    authUserId: authUser.id,
+    isStaff: true,
+  };
+}
+
 export async function upsertProfile(userId, fields) {
   const { error } = await supabase.from("profiles").upsert({
     id: userId,

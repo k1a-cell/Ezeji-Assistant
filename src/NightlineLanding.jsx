@@ -297,8 +297,8 @@ function Pricing({ onStartTrial }) {
   const plans = [
     { name: "Free trial", monthlyNgn: 0, free: true, features: ["100 conversations", "1 business profile", "FAQs, services & hours", "Customer chat link"], cta: "Start 14-day trial", highlighted: false },
     { name: "Starter", monthlyNgn: 15000, features: ["500 conversations/mo", "1 business profile", "Booking request capture", "Basic conversation analytics"], cta: "Pay Starter", highlighted: false },
-    { name: "Professional", monthlyNgn: 35000, features: ["2,500 conversations/mo", "3 staff accounts", "Advanced analytics", "Custom AI personality", "WhatsApp connection", "Export conversations & bookings (CSV)"], cta: "Pay Professional", highlighted: true },
-    { name: "Business", monthlyNgn: 75000, features: ["Unlimited conversations", "Unlimited staff accounts", "Advanced analytics", "Custom AI personality", "WhatsApp connection", "Export conversations & bookings (CSV)"], cta: "Pay Business", highlighted: false },
+    { name: "Professional", monthlyNgn: 35000, features: ["2,500 conversations/mo", "3 staff accounts", "Advanced analytics", "Custom AI personality", "Booking management & status tracking", "Export conversations & bookings (CSV)"], cta: "Pay Professional", highlighted: true },
+    { name: "Business", monthlyNgn: 75000, features: ["Unlimited conversations", "Unlimited staff accounts", "Advanced analytics", "Custom AI personality", "Booking management & status tracking", "Export conversations & bookings (CSV)"], cta: "Pay Business", highlighted: false },
   ];
   const formatNgn = (amount) => `NGN ${amount.toLocaleString()}`;
   const getMonthlyNgn = (monthlyNgn) => monthlyNgn;
@@ -469,7 +469,7 @@ function Footer() {
           <span className="dot-static" />
           <span className="brand-name">Ezeji Assistant</span>
         </div>
-        <p className="footer-copy">(c) 2026 Ezeji Assistant. Every business, always answered.</p>
+        <p className="footer-copy">(c)  Ezeji Assistant. Every business, always answered.</p>
       </div>
     </footer>
   );

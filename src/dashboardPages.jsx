@@ -8,6 +8,25 @@ import {
 } from "lucide-react";
 import { Logo, TextField, StatCard, timeAgo, downloadCsv, API_BASE_URL, STAFF_LIMITS, ANALYTICS_TIER, AI_PERSONALITY_PLANS, CONVERSATION_LIMITS, getStoredPlanSelection, upsertProfile } from "./shared";
 import { ChatWidgetDemo } from "./chatWidget";
+import { fetchAllPages } from "./dataPaging";
+import { hasActivePremiumPlan } from "./planAccess";
+
+async function staffApi(path, options = {}) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("Sign in to manage staff accounts.");
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+      ...options.headers,
+    },
+  });
+  const result = response.status === 204 ? {} : await response.json();
+  if (!response.ok) throw new Error(result.error || "Staff request failed.");
+  return result;
+}
 
 export const NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -20,11 +39,14 @@ export const NAV_ITEMS = [
   { id: "bookings", label: "Bookings", icon: CheckCircle2 },
   { id: "conversations", label: "Conversations", icon: MessagesSquare },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "integrations", label: "Integrations", icon: MessageCircle },
   { id: "billing", label: "Billing", icon: CreditCard },
 ];
 
-export function DashboardShell({ go, active, setActive, children }) {
+export function DashboardShell({ go, active, setActive, children, isStaff = false }) {
+  const visibleNavItems = isStaff
+    ? NAV_ITEMS.filter(({ id }) => id === "bookings" || id === "conversations")
+    : NAV_ITEMS;
+
   return (
     <div className="dash-shell">
       <aside className="dash-sidebar">
@@ -36,7 +58,7 @@ export function DashboardShell({ go, active, setActive, children }) {
           Back to landing
         </button>
         <nav className="dash-nav">
-          {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+          {visibleNavItems.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               className={`dash-nav-item ${active === id ? "dash-nav-item--active" : ""}`}
@@ -503,7 +525,7 @@ export function HoursLocationPage({ user, onUpdateUser }) {
 
 export function AISettingsPage({ user, onUpdateUser }) {
   const plan = user?.plan || "14-day trial";
-  const canCustomize = AI_PERSONALITY_PLANS.includes(plan);
+  const canCustomize = hasActivePremiumPlan(user);
   const [assistantName, setAssistantName] = useState(user?.assistantName || "Ezeji Assistant");
   const [tone, setTone] = useState(user?.tone || "Friendly & warm");
   const [greeting, setGreeting] = useState(user?.greeting || `Hi! I'm ${user?.business || "your business"}'s assistant - ask me about hours, pricing, or booking.`);
@@ -555,26 +577,34 @@ export function StaffPage({ user }) {
   const [email, setEmail] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const plan = user?.plan || "14-day trial";
   const limit = STAFF_LIMITS[plan] ?? 1;
+  const canManageStaff = !user?.isStaff && hasActivePremiumPlan(user);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !canManageStaff) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    supabase
-      .from("staff_members")
-      .select("id, email, invited_at")
-      .eq("business_id", user.id)
-      .order("invited_at", { ascending: true })
-      .then(({ data, error: loadError }) => {
+    staffApi("/staff")
+      .then(({ staff: data }) => {
         if (cancelled) return;
-        if (loadError) console.error("Staff load error:", loadError);
         setStaff(data || []);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        console.error("Staff load error:", loadError);
+        setError(loadError.message || "Could not load staff members.");
+      })
+      .finally(() => {
+        if (cancelled) return;
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [user?.id]);
+  }, [user?.id, canManageStaff]);
 
   const atLimit = limit !== Infinity && staff.length >= limit;
 
@@ -585,31 +615,41 @@ export function StaffPage({ user }) {
       return;
     }
     setError("");
+    setNotice("");
     setSaving(true);
-    const { data, error: insertError } = await supabase
-      .from("staff_members")
-      .insert({ business_id: user.id, email: email.trim().toLowerCase() })
-      .select()
-      .single();
-    setSaving(false);
-    if (insertError) {
-      console.error("Staff invite error:", insertError);
-      setError("Couldn't add that staff member. Try again.");
-      return;
+    try {
+      const { staffMember, inviteSent } = await staffApi("/staff/invite", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      setStaff((current) => [...current, staffMember]);
+      setEmail("");
+      setNotice(inviteSent ? "Invitation email sent." : "Added. They can sign in with their existing account.");
+    } catch (inviteError) {
+      console.error("Staff invite error:", inviteError);
+      setError(inviteError.message || "Couldn't invite that staff member.");
+    } finally {
+      setSaving(false);
     }
-    setStaff((s) => [...s, data]);
-    setEmail("");
   };
 
   const remove = async (id) => {
-    setStaff((s) => s.filter((row) => row.id !== id));
-    const { error: deleteError } = await supabase.from("staff_members").delete().eq("id", id);
-    if (deleteError) console.error("Staff remove error:", deleteError);
+    setError("");
+    try {
+      await staffApi(`/staff/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setStaff((current) => current.filter((row) => row.id !== id));
+    } catch (removeError) {
+      console.error("Staff remove error:", removeError);
+      setError(removeError.message || "Could not remove that staff member.");
+    }
   };
 
   return (
     <div>
-      <div className="page-header"><div><h1 className="page-title">Staff</h1><p className="page-sub">Real seat limits based on your plan - {plan} includes {limit === Infinity ? "unlimited" : limit} seat{limit === 1 ? "" : "s"}.</p></div></div>
+      <div className="page-header"><div><h1 className="page-title">Staff</h1><p className="page-sub">Invite staff to manage bookings and conversations. {plan} includes {limit === Infinity ? "unlimited" : limit} seat{limit === 1 ? "" : "s"}.</p></div></div>
+      {!canManageStaff ? (
+        <div className="panel"><p className="panel-title">Staff accounts require an active Professional or Business plan.</p><p className="panel-help">Upgrade in Billing to invite staff.</p></div>
+      ) : (
       <div className="panel">
         {loading ? (
           <p className="panel-help">Loading...</p>
@@ -627,9 +667,10 @@ export function StaffPage({ user }) {
             <div className="faq-add" style={{ marginTop: 16 }}>
               <input className="field-input" placeholder="teammate@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
               <button className="btn btn--outline" onClick={invite} disabled={saving || atLimit}>
-                <Plus className="icon-btn-icon" /> {saving ? "Adding..." : "Add staff"}
+                <Plus className="icon-btn-icon" /> {saving ? "Sending invite..." : "Invite staff"}
               </button>
             </div>
+            {notice && <p className="save-status">{notice}</p>}
             {error && <p className="auth-error">{error}</p>}
             {atLimit && !error && (
               <p className="panel-help" style={{ marginTop: 8 }}>You've used all your available seats - upgrade your plan in Billing to add more.</p>
@@ -637,18 +678,23 @@ export function StaffPage({ user }) {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
 
 export function BookingsPage({ user }) {
-  const plan = user?.plan || "14-day trial";
-  const canExport = AI_PERSONALITY_PLANS.includes(plan);
+  const canManageBookings = user?.isStaff || hasActivePremiumPlan(user);
+  const canExport = canManageBookings;
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !canManageBookings) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     supabase
       .from("bookings")
@@ -662,12 +708,28 @@ export function BookingsPage({ user }) {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [user?.id]);
+  }, [user?.id, canManageBookings]);
 
   const updateStatus = async (id, status) => {
     setBookings((b) => b.map((row) => (row.id === id ? { ...row, status } : row)));
     const { error } = await supabase.from("bookings").update({ status }).eq("id", id);
     if (error) console.error("Booking update error:", error);
+  };
+
+  const deleteBooking = async (id) => {
+    if (!window.confirm("Delete this booking permanently?")) return;
+    setError("");
+    const { error: deleteError } = await supabase
+      .from("bookings")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", user.id);
+    if (deleteError) {
+      console.error("Booking delete error:", deleteError);
+      setError("Couldn't delete that booking. Please try again.");
+      return;
+    }
+    setBookings((current) => current.filter((row) => row.id !== id));
   };
 
   const exportCsv = () => {
@@ -691,7 +753,11 @@ export function BookingsPage({ user }) {
           <button className="btn btn--outline" onClick={exportCsv}>Export CSV</button>
         )}
       </div>
+      {!canManageBookings ? (
+        <div className="panel"><p className="panel-title">Booking management requires an active Professional or Business plan.</p><p className="panel-help">Starter includes booking request capture. Upgrade in Billing to view and manage confirmed bookings.</p></div>
+      ) : (
       <div className="panel">
+        {error && <p className="auth-error">{error}</p>}
         {loading && <p className="panel-help">Loading...</p>}
         {!loading && bookings.length === 0 && <p className="panel-help">No bookings yet - once a customer books through the chat widget, it'll show up here for real.</p>}
         {bookings.length > 0 && (
@@ -711,6 +777,7 @@ export function BookingsPage({ user }) {
                     {b.status !== "confirmed" && (
                       <button className="btn btn--outline" onClick={() => updateStatus(b.id, "confirmed")}>Confirm</button>
                     )}
+                    <button className="icon-btn" onClick={() => deleteBooking(b.id)} aria-label="Delete booking" title="Delete booking"><Trash2 className="icon-btn-icon" /></button>
                   </td>
                 </tr>
               ))}
@@ -718,16 +785,18 @@ export function BookingsPage({ user }) {
           </table>
         )}
       </div>
+      )}
     </div>
   );
 }
 
 export function ConversationsPage({ user }) {
-  const plan = user?.plan || "14-day trial";
-  const canExport = AI_PERSONALITY_PLANS.includes(plan);
+  const canExport = user?.isStaff || hasActivePremiumPlan(user);
   const [convos, setConvos] = useState([]);
   const [selected, setSelected] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   useEffect(() => {
     if (!user?.id) return;
@@ -747,13 +816,32 @@ export function ConversationsPage({ user }) {
     return () => { cancelled = true; };
   }, [user?.id]);
 
-  const exportCsv = () => {
-    downloadCsv(`conversations-${new Date().toISOString().slice(0, 10)}.csv`, convos, [
-      { label: "Date", get: (r) => new Date(r.created_at).toLocaleString() },
-      { label: "Customer message", get: (r) => r.customer_message },
-      { label: "AI reply", get: (r) => r.ai_reply },
-      { label: "Status", get: (r) => (r.escalated ? "Escalated" : "Resolved") },
-    ]);
+  const exportCsv = async () => {
+    setIsExporting(true);
+    setExportError("");
+    try {
+      const pageSize = 1000;
+      const allConversations = await fetchAllPages((offset, limit) =>
+        supabase
+          .from("conversations")
+          .select("id, customer_message, ai_reply, escalated, created_at", { count: offset === 0 ? "exact" : undefined })
+          .eq("business_id", user.id)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(offset, offset + limit - 1), pageSize);
+
+      downloadCsv(`conversations-${new Date().toISOString().slice(0, 10)}.csv`, allConversations, [
+        { label: "Date", get: (r) => new Date(r.created_at).toLocaleString() },
+        { label: "Customer message", get: (r) => r.customer_message },
+        { label: "AI reply", get: (r) => r.ai_reply },
+        { label: "Status", get: (r) => (r.escalated ? "Escalated" : "Resolved") },
+      ]);
+    } catch (error) {
+      console.error("Conversation export error:", error);
+      setExportError("Couldn't export conversations. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -761,9 +849,10 @@ export function ConversationsPage({ user }) {
       <div className="page-header">
         <div><h1 className="page-title">Conversations</h1><p className="page-sub">Every message, searchable and reviewable.</p></div>
         {canExport && convos.length > 0 && (
-          <button className="btn btn--outline" onClick={exportCsv}>Export CSV</button>
+          <button className="btn btn--outline" onClick={exportCsv} disabled={isExporting}>{isExporting ? "Preparing CSV..." : "Export CSV"}</button>
         )}
       </div>
+      {exportError && <p className="auth-error">{exportError}</p>}
       {loading && <p className="panel-help">Loading...</p>}
       {!loading && convos.length === 0 && <p className="panel-help">No conversations yet - once customers start chatting, they'll show up here.</p>}
       {convos.length > 0 && (
@@ -791,7 +880,7 @@ export function ConversationsPage({ user }) {
 
 export function AnalyticsPage({ user }) {
   const plan = user?.plan || "14-day trial";
-  const tier = ANALYTICS_TIER[plan] ?? "basic";
+  const tier = hasActivePremiumPlan(user) ? ANALYTICS_TIER[plan] ?? "basic" : "basic";
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -1187,6 +1276,5 @@ export const DASHBOARD_PAGES = {
   bookings: BookingsPage,
   conversations: ConversationsPage,
   analytics: AnalyticsPage,
-  integrations: IntegrationsPage,
   billing: BillingPage,
 };

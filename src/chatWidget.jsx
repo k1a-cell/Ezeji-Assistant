@@ -176,7 +176,7 @@ export function ChatWidgetDemo({ user, enabled = true, previewOnly = false }) {
 
     const isBookingIntent = /(book|booking|room|suite|stay|reservation|date|dates|friday|saturday|sunday|tomorrow|weekend|guest|guests|time|slot)/i.test(nextText);
     if (isBookingIntent) {
-      saveBookingRequest(nextText);
+      if (!previewOnly) saveBookingRequest(nextText);
       setBookingNotice("Booking details captured. The assistant will keep guiding the customer through the next step.");
     } else {
       setBookingNotice("");
@@ -189,7 +189,7 @@ export function ChatWidgetDemo({ user, enabled = true, previewOnly = false }) {
     const isEscalation = escalationKeywords.some((kw) => nextText.toLowerCase().includes(kw));
 
     try {
-      const payload = buildAssistantRequestPayload(nextText, user, nextConversation, knowledge);
+      const payload = buildAssistantRequestPayload(nextText, user, nextConversation, knowledge, { previewOnly });
       setIsTyping(true);
       const response = await fetch(`${API_BASE_URL}/assistant-reply`, {
         method: "POST",

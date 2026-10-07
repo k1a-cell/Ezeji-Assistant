@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import NightlineLanding from "./NightlineLanding";
 import { supabase } from "./supabaseClient";
-import { fetchPublicProfile, fetchProfile, upsertProfile } from "./shared";
+import { fetchPublicProfile, resolveSignedInUser, upsertProfile } from "./shared";
 import { LoginScreen, SignupScreen, CheckoutScreen, ForgotScreen } from "./authScreens";
 import { DashboardShell, DASHBOARD_PAGES } from "./dashboardPages";
 import { ChatWidgetDemo } from "./chatWidget";
@@ -54,9 +54,13 @@ export default function NightlineApp() {
 
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (cancelled || !session) return;
-      const profile = await fetchProfile(session.user.id, session.user.email, session.user.user_metadata);
+      const profile = await resolveSignedInUser(session.user, session.access_token);
       if (cancelled) return;
       setUser(profile || { id: session.user.id, email: session.user.email });
+      if (profile?.isStaff) {
+        setDashTab("bookings");
+        setView("dashboard");
+      }
     });
 
     return () => {
@@ -66,6 +70,7 @@ export default function NightlineApp() {
 
   const handleLogin = (nextUser) => {
     setUser(nextUser);
+    setDashTab(nextUser?.isStaff ? "bookings" : "overview");
   };
 
   const handleLogout = async () => {
@@ -118,7 +123,7 @@ export default function NightlineApp() {
         )
       )}
       {view === "dashboard" && (
-        <DashboardShell go={(nextView) => (nextView === "login" ? handleLogout() : setView(nextView))} active={dashTab} setActive={setDashTab}>
+        <DashboardShell go={(nextView) => (nextView === "login" ? handleLogout() : setView(nextView))} active={dashTab} setActive={setDashTab} isStaff={user?.isStaff}>
           <ActivePage user={user} onUpdateUser={handleUpdateUser} />
         </DashboardShell>
       )}
