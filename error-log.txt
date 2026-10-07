@@ -1,0 +1,14 @@
+◇ injected env (5) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+file:///C:/Users/ADMIN/Music/ai%20ai/ai-assistant/node_modules/stripe/esm/stripe.esm.node.js:300
+            throw new Error('Neither apiKey nor config.authenticator provided');
+                  ^
+
+Error: Neither apiKey nor config.authenticator provided
+    at Stripe._setAuthenticator (file:///C:/Users/ADMIN/Music/ai%20ai/ai-assistant/node_modules/stripe/esm/stripe.esm.node.js:300:19)
+    at new Stripe (file:///C:/Users/ADMIN/Music/ai%20ai/ai-assistant/node_modules/stripe/esm/stripe.esm.node.js:190:14)
+    at file:///C:/Users/ADMIN/Music/ai%20ai/ai-assistant/server.js:10:16
+    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
+    at async node:internal/modules/esm/loader:639:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.15.0
