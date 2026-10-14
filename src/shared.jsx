@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useId, useState } from "react";
 import { supabase } from "./supabaseClient";
 import { Eye, EyeOff } from "lucide-react";
+import { resolveSignedInUserWith } from "./signedInUser.js";
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5174";
 
@@ -14,31 +15,15 @@ export function Logo({ size = 18 }) {
 }
 
 export async function fetchPublicProfile(businessId) {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, business, business_type, custom_business_type, service_name, price, hours, description")
-    .eq("id", businessId)
-    .maybeSingle();
-
-  if (error) {
-    console.error("fetchPublicProfile error:", error);
-    return null;
-  }
-  if (!data) return null;
-
-  return {
-    id: data.id,
-    business: data.business,
-    businessType: data.business_type,
-    customBusinessType: data.custom_business_type,
-    serviceName: data.service_name,
-    price: data.price,
-    hours: data.hours,
-    description: data.description,
-  };
+  if (typeof businessId !== "string" || !/^[0-9a-f-]{36}$/i.test(businessId)) return null;
+  const response = await fetch(`${API_BASE_URL}/public-business/${encodeURIComponent(businessId)}`);
+  if (response.status === 404) return null;
+  const payload = await response.json().catch(()=>({}));
+  if (!response.ok) throw new Error(payload.error || "Public business information unavailable");
+  return payload.business;
 }
 
-export async function fetchProfile(userId, email, userMetadata = {}) {
+export async function fetchProfile(userId, email, _userMetadata = {}) {
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
@@ -46,10 +31,25 @@ export async function fetchProfile(userId, email, userMetadata = {}) {
     .maybeSingle();
 
   if (error) {
-    console.error("fetchProfile error:", error);
-    return null;
+    // A failed lookup must never be confused with a missing business.
+    throw new Error("Unable to load your business account. Please retry.");
   }
   if (!data) return null;
+
+  let paidSubscription = null;
+  if (data.plan !== "14-day trial") {
+    const { data: subscription, error: subscriptionError } = await supabase.from("subscriptions")
+      .select("plan,billing_period,status,current_period_end,grace_period_ends_at,cancel_at_period_end")
+      .eq("business_id", data.id).maybeSingle();
+    if (subscriptionError) throw new Error("Unable to validate your subscription. Please retry.");
+    paidSubscription = subscription;
+  }
+  const subscriptionValid = paidSubscription && (
+    (["active", "cancellation_scheduled"].includes(paidSubscription.status) &&
+      Date.parse(paidSubscription.current_period_end) > Date.now()) ||
+    (paidSubscription.status === "grace" &&
+      Date.parse(paidSubscription.grace_period_ends_at) > Date.now())
+  );
 
   return {
     id: data.id,
@@ -62,10 +62,15 @@ export async function fetchProfile(userId, email, userMetadata = {}) {
     price: data.price,
     hours: data.hours,
     description: data.description,
-    plan: data.plan,
-    billingPeriod: data.billing_period,
+    phone: data.contact_phone || "",
+    contactEmail: data.public_contact_email || "",
+    website: data.website || "",
+    plan: paidSubscription?.plan || data.plan,
+    billingPeriod: paidSubscription?.billing_period || data.billing_period,
     currency: data.currency,
-    paymentStatus: data.payment_status,
+    paymentStatus: data.plan === "14-day trial" ? data.payment_status : (subscriptionValid ? "active" : "expired"),
+    subscriptionEndsAt: paidSubscription?.current_period_end || null,
+    cancelAtPeriodEnd: paidSubscription?.cancel_at_period_end === true,
     trialActive: data.trial_active,
     trialEndsAt: data.trial_ends_at,
     assistantName: data.assistant_name,
@@ -73,36 +78,39 @@ export async function fetchProfile(userId, email, userMetadata = {}) {
     greeting: data.greeting,
     escalationKeywords: data.escalation_keywords,
     hoursJson: data.hours_json,
+    timezone: data.timezone || 'Africa/Lagos',
     address: data.address,
     cityStateZip: data.city_state_zip,
     disappearingDefault: data.disappearing_default,
-    assistantLive: userMetadata.assistant_live !== false,
+    assistantLive: data.assistant_active !== false,
   };
 }
 
 export async function resolveSignedInUser(authUser, accessToken) {
-  const profile = await fetchProfile(authUser.id, authUser.email, authUser.user_metadata);
-  if (profile) return profile;
-
-  const response = await fetch(`${API_BASE_URL}/staff/me`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  return resolveSignedInUserWith(authUser, accessToken, {
+    lookupProfile: fetchProfile,
+    lookupStaff: (token) => {
+      const selected = typeof sessionStorage !== "undefined"
+        ? sessionStorage.getItem("ezeji-staff-business") : null;
+      const query = selected ? "?businessId=" + encodeURIComponent(selected) : "";
+      const headers = { Authorization: `Bearer ${token}` };
+      return fetch(`${API_BASE_URL}/staff/me${query}`, { headers }).then(async response => {
+        if (selected && response.status === 403) {
+          // A previous account's saved business context must never trap a
+          // newly signed-in member in an unauthorized selection loop.
+          sessionStorage.removeItem("ezeji-staff-business");
+          return fetch(`${API_BASE_URL}/staff/me`, { headers });
+        }
+        return response;
+      });
+    },
   });
-  if (response.status === 404) return null;
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Could not load staff access.");
-
-  return {
-    id: result.businessId,
-    email: authUser.email,
-    plan: result.plan,
-    authUserId: authUser.id,
-    isStaff: true,
-  };
 }
 
 export async function upsertProfile(userId, fields) {
-  const { error } = await supabase.from("profiles").upsert({
-    id: userId,
+  // Update display/configuration fields only. Creation and billing changes
+  // belong to the authenticated server provisioning/payment paths.
+  const changes = {
     name: fields.name,
     business: fields.business,
     business_type: fields.businessType,
@@ -111,42 +119,41 @@ export async function upsertProfile(userId, fields) {
     price: fields.price,
     hours: fields.hours,
     description: fields.description,
-    plan: fields.plan,
-    billing_period: fields.billingPeriod,
-    currency: fields.currency,
-    payment_status: fields.paymentStatus,
-    trial_active: fields.trialActive,
-    trial_ends_at: fields.trialEndsAt,
+    contact_phone: fields.phone,
+    public_contact_email: fields.contactEmail,
+    website: fields.website,
     assistant_name: fields.assistantName,
     tone: fields.tone,
     greeting: fields.greeting,
     escalation_keywords: fields.escalationKeywords,
     hours_json: fields.hoursJson,
+    timezone: fields.timezone,
     address: fields.address,
     city_state_zip: fields.cityStateZip,
-  });
+  };
+  const patch = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
+  const { data, error } = await supabase.from("profiles")
+    .update(patch).eq("id", userId).select("id").maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Business profile is missing or access was denied.");
 
-  if (error) {
-    console.error("upsertProfile error:", error);
-    throw error;
-  }
 
-  const { error: metadataError } = await supabase.auth.updateUser({
-    data: { assistant_live: fields.assistantLive !== false },
-  });
-  if (metadataError) console.error("assistant status save error:", metadataError);
 }
 
-
-export function TextField({ label, type = "text", icon: Icon, value, onChange, placeholder }) {
+export function TextField({ label, type = "text", icon: Icon, value, onChange, placeholder, help, error, ...inputProps }) {
+  const id = useId();
   const [show, setShow] = useState(false);
   const isPassword = type === "password";
   return (
-    <label className="field">
+    <label className="field" htmlFor={id}>
       <span className="field-label">{label}</span>
-      <div className="field-input-wrap">
+      <div className={`field-input-wrap ${Icon ? "field-input-wrap--icon" : ""} ${isPassword ? "field-input-wrap--password" : ""}`}>
         {Icon && <Icon className="field-icon" />}
         <input
+          {...inputProps}
+          id={id}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={help || error ? `${id}-help` : undefined}
           className="field-input"
           type={isPassword && show ? "text" : type}
           value={value}
@@ -154,40 +161,52 @@ export function TextField({ label, type = "text", icon: Icon, value, onChange, p
           placeholder={placeholder}
         />
         {isPassword && (
-          <button type="button" className="field-eye" onClick={() => setShow((s) => !s)}>
+          <button type="button" className="field-eye" aria-label={show ? "Hide password" : "Show password"} aria-pressed={show} onClick={() => setShow((s) => !s)}>
             {show ? <EyeOff className="field-icon" /> : <Eye className="field-icon" />}
           </button>
         )}
       </div>
+      {(help || error) && <span id={`${id}-help`} className={error ? "auth-error" : "field-help"}>{error || help}</span>}
     </label>
   );
 }
 
 export function AuthShell({ children, footer }) {
   return (
-    <div className="auth-screen">
+    <main className="auth-screen">
       <div className="auth-card">
-        <Logo size={20} />
+        <Logo size={24} />
+        <p className="auth-kicker">Your business, thoughtfully connected</p>
         {children}
       </div>
       <p className="auth-footer">{footer}</p>
-    </div>
+    </main>
   );
 }
 
 
 export function getStoredPlanSelection() {
-  if (typeof window === "undefined") return { plan: "14-day trial", mode: "trial", billingPeriod: "monthly", currency: "USD" };
+  const trial = { plan: "14-day trial", mode: "trial", billingPeriod: "monthly", currency: "NGN" };
+  if (typeof window === "undefined") return trial;
   try {
     const saved = window.localStorage.getItem("nightline-plan-selection");
-    if (saved) return { billingPeriod: "monthly", currency: "USD", ...JSON.parse(saved) };
+    if (saved) {
+      const selection = JSON.parse(saved);
+      return selection && typeof selection === "object" && !Array.isArray(selection)
+        ? { ...trial, ...selection, currency: "NGN" }
+        : trial;
+    }
     const legacy = window.localStorage.getItem("nightline-trial-plan");
-    return legacy ? { plan: legacy, mode: legacy === "14-day trial" ? "trial" : "paid", billingPeriod: "monthly", currency: "USD" } : { plan: "14-day trial", mode: "trial", billingPeriod: "monthly", currency: "USD" };
+    return legacy ? {
+      plan: legacy,
+      mode: legacy === "14-day trial" ? "trial" : "paid",
+      billingPeriod: "monthly",
+      currency: "NGN",
+    } : trial;
   } catch {
-    return { plan: "14-day trial", mode: "trial", billingPeriod: "monthly", currency: "USD" };
+    return trial;
   }
 }
-
 
 export const STAFF_LIMITS = {
   '14-day trial': 1,
@@ -216,12 +235,12 @@ export const CONVERSATION_LIMITS = {
 };
 
 
-export function StatCard({ label, value, sub, accent }) {
+export function StatCard({ label, value, sub, accent, loading }) {
   return (
-    <div className="stat-card">
+    <div className="stat-card" aria-busy={loading || undefined}>
       <p className="stat-label">{label}</p>
-      <p className="stat-value" style={accent ? { color: "var(--amber)" } : undefined}>{value}</p>
-      {sub && <p className="stat-sub">{sub}</p>}
+      <p className="stat-value" style={accent ? { color: "var(--amber)" } : undefined}>{loading ? <span className="skeleton" aria-label="Loading metric" /> : value}</p>
+      {sub && !loading && <p className="stat-sub">{sub}</p>}
     </div>
   );
 }
